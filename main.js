@@ -1,9 +1,14 @@
-const { app, BrowserWindow, ipcMain, shell, dialog } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, Notification, nativeImage } = require("electron");
 const windowStateKeeper = require("electron-window-state");
 const { createMainWindow } = require("./Windows");
-const { openExternalLinks, ossWindow } = require("./utils");
+const { openExternalLinks, ossWindow, checkForUpdatesManual } = require("./utils");
 const fs = require("fs");
 const path = require("path");
+const packageJson = require("./package.json");
+
+// Global değişkenler
+let tray = null;
+let isQuitting = false; // Gerçek çıkış mı yoksa tray'e minimize mi?
 
 // Windows Store detection
 const isWindowsStore = process.env.WINDOWS_STORE === 'true' || process.windowsStore || false;
@@ -25,6 +30,136 @@ if (isWindowsStore) {
 
 let mainWindow = null;
 let deeplinkingUrl = null;
+
+// Tray oluşturma fonksiyonu
+function createTray() {
+  // Platformlara göre ikon seçimi
+  let iconPath;
+  if (process.platform === 'darwin') {
+    // macOS için template image kullan
+    iconPath = path.join(__dirname, 'topluyo.png');
+  } else if (process.platform === 'win32') {
+    iconPath = path.join(__dirname, 'build', 'icon.ico');
+  } else {
+    // Linux
+    iconPath = path.join(__dirname, 'topluyo.png');
+  }
+
+  // İkon dosyası yoksa fallback
+  if (!fs.existsSync(iconPath)) {
+    iconPath = path.join(__dirname, 'topluyo.png');
+  }
+
+  const trayIcon = nativeImage.createFromPath(iconPath);
+  tray = new Tray(trayIcon.resize({ width: 16, height: 16 }));
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Topluyo ' + packageJson.version,
+      enabled: false
+    },
+    { type: 'separator' },
+    {
+      label: 'Göster',
+      click: () => {
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      }
+    },
+    {
+      label: 'Güncellemeyi Kontrol Et',
+      click: () => {
+        checkForUpdatesManual(mainWindow);
+      }
+    },
+    {
+      label: 'Açık Kaynak Lisansları',
+      click: () => {
+        ossWindow();
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Çıkış',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      }
+    }
+  ]);
+
+  tray.setToolTip('Topluyo');
+  tray.setContextMenu(contextMenu);
+
+  // Çift tıklama ile pencereyi göster
+  tray.on('double-click', () => {
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
+// OS seviyesi bildirim gösterme fonksiyonu
+function showNativeNotification(notificationData) {
+  /*
+   * Bildirim objesi formatı:
+   * {
+   *   id: number,
+   *   image: string (URL),
+   *   parameters: string (JSON array),
+   *   text: string,
+   *   link: string,
+   *   type: string,
+   *   ...
+   * }
+   */
+
+  // TODO: İleride bildirim sesi eklenebilir
+  // const notificationSound = new Audio(path.join(__dirname, 'sounds', 'notification.mp3'));
+  // notificationSound.play();
+
+  let title = 'Topluyo';
+  let body = notificationData.text || 'Yeni bildirim';
+
+  // Parameters'dan başlık oluştur
+  if (notificationData.parameters) {
+    try {
+      const params = JSON.parse(notificationData.parameters);
+      if (params.length > 0) {
+        title = params[0]; // Kullanıcı adı
+        if (params.length > 1) {
+          title += ' - ' + params[1]; // Kanal adı
+        }
+      }
+    } catch (e) {
+      console.error('Bildirim parameters parse hatası:', e);
+    }
+  }
+
+  const notification = new Notification({
+    title: title,
+    body: body,
+    icon: path.join(__dirname, 'topluyo.png'),
+    silent: false // TODO: Özel ses için true yapılıp manuel ses çalınabilir
+  });
+
+  notification.on('click', () => {
+    // Bildirime tıklandığında ilgili sayfayı aç
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+      if (notificationData.link) {
+        const fullUrl = 'https://topluyo.com' + (notificationData.link.startsWith('/') ? notificationData.link : '/' + notificationData.link);
+        mainWindow.loadURL(fullUrl);
+      }
+    }
+  });
+
+  notification.show();
+}
 
 const gotLock = app.requestSingleInstanceLock();
 if (process.platform === "linux") {
@@ -74,6 +209,9 @@ if (!gotLock) {
 }
 
 app.whenReady().then(() => {
+  // Tray oluştur
+  createTray();
+
   //* Load the previous state with fallback to defaults
   const mainWindowState = windowStateKeeper({
     defaultWidth: 800,
@@ -87,8 +225,22 @@ app.whenReady().then(() => {
   }
   mainWindow = createMainWindow(
     mainWindowState,
-    deeplinkingUrl ? deeplinkingUrl.replace("topluyo://", "/") : null
+    deeplinkingUrl ? deeplinkingUrl.replace("topluyo://", "/") : null,
+    isQuitting // isQuitting değişkenini Windows.js'e geçir
   );
+
+  // Pencere kapatıldığında tray'e minimize et (gerçek çıkış değilse)
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+
+      // macOS'ta dock'tan da gizle (isteğe bağlı)
+      // if (process.platform === 'darwin') {
+      //   app.dock.hide();
+      // }
+    }
+  });
 
   //* url handler
 
@@ -127,6 +279,11 @@ app.whenReady().then(() => {
   });
 });
 
+// Uygulama kapanmadan önce isQuitting flag'ini ayarla
+app.on('before-quit', () => {
+  isQuitting = true;
+});
+
 if (process.platform === "darwin") {
   app.on("open-url", (event, url) => {
     event.preventDefault();
@@ -142,14 +299,19 @@ if (process.platform === "darwin") {
 }
 
 app.on("window-all-closed", function () {
-  if (process.platform === "win32") {
-    app.quit();
-  } else {
-    app.exit();
+  // Tray aktifken uygulamayı kapatma
+  // Sadece isQuitting true ise veya tray yoksa kapat
+  if (isQuitting || !tray) {
+    if (process.platform === "win32") {
+      app.quit();
+    } else {
+      app.exit();
+    }
   }
+  // Tray aktifse uygulama arka planda çalışmaya devam eder
 });
 
-ipcMain.on("open-oss",()=>{
+ipcMain.on("open-oss", () => {
   ossWindow();
 });
 
@@ -158,9 +320,9 @@ ipcMain.handle("get-oss-libraries", async () => {
   try {
     const packageJsonPath = path.join(__dirname, "package.json");
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-    
+
     const libraries = [];
-    
+
     // Lisans dosyasını okuma fonksiyonu
     const readLicenseFile = (packagePath) => {
       const possibleLicenseFiles = [
@@ -174,7 +336,7 @@ ipcMain.handle("get-oss-libraries", async () => {
         'license.txt',
         'license.md'
       ];
-      
+
       for (const fileName of possibleLicenseFiles) {
         const licensePath = path.join(packagePath, fileName);
         if (fs.existsSync(licensePath)) {
@@ -187,7 +349,7 @@ ipcMain.handle("get-oss-libraries", async () => {
       }
       return null;
     };
-    
+
     // Ana uygulama bilgisi
     const mainLicenseText = readLicenseFile(__dirname);
     libraries.push({
@@ -199,18 +361,18 @@ ipcMain.handle("get-oss-libraries", async () => {
       homepage: "https://topluyo.com",
       repository: null
     });
-    
+
     // Dependencies
     if (packageJson.dependencies) {
       for (const [name, version] of Object.entries(packageJson.dependencies)) {
         try {
           const depPackagePath = path.join(__dirname, "node_modules", name);
           const depPackageJsonPath = path.join(depPackagePath, "package.json");
-          
+
           if (fs.existsSync(depPackageJsonPath)) {
             const depPackage = JSON.parse(fs.readFileSync(depPackageJsonPath, 'utf8'));
             const licenseText = readLicenseFile(depPackagePath);
-            
+
             libraries.push({
               name: depPackage.name,
               version: depPackage.version,
@@ -237,18 +399,18 @@ ipcMain.handle("get-oss-libraries", async () => {
         }
       }
     }
-    
+
     // DevDependencies (sadece production'da değilse)
     if (packageJson.devDependencies && process.env.NODE_ENV === 'development') {
       for (const [name, version] of Object.entries(packageJson.devDependencies)) {
         try {
           const depPackagePath = path.join(__dirname, "node_modules", name);
           const depPackageJsonPath = path.join(depPackagePath, "package.json");
-          
+
           if (fs.existsSync(depPackageJsonPath)) {
             const depPackage = JSON.parse(fs.readFileSync(depPackageJsonPath, 'utf8'));
             const licenseText = readLicenseFile(depPackagePath);
-            
+
             libraries.push({
               name: depPackage.name + " (dev)",
               version: depPackage.version,
@@ -264,7 +426,7 @@ ipcMain.handle("get-oss-libraries", async () => {
         }
       }
     }
-    
+
     // Electron ve Node.js gibi sistem bileşenleri
     libraries.push({
       name: "Electron",
@@ -295,7 +457,7 @@ SOFTWARE.`,
       homepage: "https://electronjs.org",
       repository: "https://github.com/electron/electron"
     });
-    
+
     libraries.push({
       name: "Node.js",
       version: process.versions.node,
@@ -325,7 +487,7 @@ SOFTWARE.`,
       homepage: "https://nodejs.org",
       repository: "https://github.com/nodejs/node"
     });
-    
+
     libraries.push({
       name: "Chromium",
       version: process.versions.chrome,
@@ -362,7 +524,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.`,
       homepage: "https://www.chromium.org",
       repository: "https://chromium.googlesource.com/chromium/src/"
     });
-    
+
     return libraries;
   } catch (error) {
     console.error("Error reading OSS libraries:", error);
@@ -389,3 +551,14 @@ ipcMain.on("maximize", () => {
 ipcMain.on("close", () => {
   BrowserWindow.getFocusedWindow().close();
 });
+
+// Renderer'dan gelen bildirimleri OS seviyesinde göster
+ipcMain.on("show-notification", (_, notificationData) => {
+  showNativeNotification(notificationData);
+});
+
+// Bildirim desteği kontrolü
+ipcMain.handle("notification-supported", () => {
+  return Notification.isSupported();
+});
+

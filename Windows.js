@@ -17,7 +17,10 @@ if (!isWindowsStore) {
 }
 
 function createMainWindow(windowstate, url) {
-  let mainWindow = new BrowserWindow({
+  // Linux için bazı özellikler sorun yaratabilir
+  const isLinux = process.platform === 'linux';
+
+  let windowOptions = {
     x: windowstate.x,
     y: windowstate.y,
     width: windowstate.width,
@@ -33,7 +36,22 @@ function createMainWindow(windowstate, url) {
       nodeIntegration: true,
       preload: path.join(__dirname, "preload.js"),
     },
-  });
+  };
+
+  // Linux-specific ayarlar
+  if (isLinux) {
+    // Linux'ta bazı DE'lerde frame:false sorun yaratabilir
+    // Gerekirse burada ayarlamalar yapılabilir
+    windowOptions.autoHideMenuBar = true;
+
+    // Linux'ta transparan pencere sorunlarını önle
+    windowOptions.transparent = false;
+
+    // Linux'ta GPU ile ilgili sorunları önlemek için
+    // (main.js'de zaten disable ediliyor ama burada da belirtelim)
+  }
+
+  let mainWindow = new BrowserWindow(windowOptions);
 
   // Başlangıçta loading ekranı yükle
   mainWindow.loadFile("loading.html");
@@ -92,9 +110,9 @@ function checkForUpdatesAndLoad(mainWindow) {
   autoUpdater.logger.transports.file.level = "info";
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = false;
-  if(process.env.NODE_ENV === "development") {
-      mainWindow.loadURL("https://topluyo.com");
-    }
+  if (process.env.NODE_ENV === "development") {
+    mainWindow.loadURL("https://topluyo.com");
+  }
   autoUpdater.on("checking-for-update", () => {
     console.log("Güncellemeler kontrol ediliyor...");
     autoUpdater.logger = log;

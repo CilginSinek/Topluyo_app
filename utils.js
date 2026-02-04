@@ -164,7 +164,7 @@ const openExternalLinks = (url) => {
 };
 
 
-function ossWindow(){
+function ossWindow() {
   let ossWin = new BrowserWindow({
     width: 800,
     height: 600,
@@ -179,7 +179,7 @@ function ossWindow(){
   });
 
   ossWin.loadFile("oss.html");
-  ossWin.webContents.setWindowOpenHandler((_)=>{
+  ossWin.webContents.setWindowOpenHandler((_) => {
     return { action: "deny" };
   })
   ossWin.on("closed", () => {
@@ -187,4 +187,63 @@ function ossWindow(){
   });
 }
 
-module.exports = { isSafeUrl, mediaHandler, openExternalLinks, ossWindow };
+// Manuel güncelleme kontrolü (tray menüsünden)
+function checkForUpdatesManual(mainWindow) {
+  const isWindowsStore = process.env.WINDOWS_STORE === 'true' || process.env.STOREBUILD === 'true';
+
+  if (isWindowsStore) {
+    dialog.showMessageBox({
+      type: 'info',
+      title: 'Güncelleme',
+      message: 'Windows Store sürümünde güncellemeler Microsoft Store üzerinden yapılmaktadır.',
+      buttons: ['Tamam']
+    });
+    return;
+  }
+
+  try {
+    const { autoUpdater } = require("electron-updater");
+    const log = require("electron-log");
+
+    autoUpdater.logger = log;
+    autoUpdater.logger.transports.file.level = "info";
+
+    autoUpdater.on("update-available", () => {
+      dialog.showMessageBox({
+        type: 'info',
+        title: 'Güncelleme Mevcut',
+        message: 'Yeni bir güncelleme bulundu. İndiriliyor...',
+        buttons: ['Tamam']
+      });
+    });
+
+    autoUpdater.on("update-not-available", () => {
+      dialog.showMessageBox({
+        type: 'info',
+        title: 'Güncel',
+        message: 'En güncel sürümü kullanıyorsunuz.',
+        buttons: ['Tamam']
+      });
+    });
+
+    autoUpdater.on("error", (err) => {
+      dialog.showMessageBox({
+        type: 'error',
+        title: 'Güncelleme Hatası',
+        message: 'Güncelleme kontrol edilirken bir hata oluştu: ' + err.message,
+        buttons: ['Tamam']
+      });
+    });
+
+    autoUpdater.checkForUpdates();
+  } catch (error) {
+    dialog.showMessageBox({
+      type: 'error',
+      title: 'Güncelleme Hatası',
+      message: 'Güncelleme sistemi kullanılamıyor: ' + error.message,
+      buttons: ['Tamam']
+    });
+  }
+}
+
+module.exports = { isSafeUrl, mediaHandler, openExternalLinks, ossWindow, checkForUpdatesManual };
